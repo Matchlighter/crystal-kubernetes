@@ -153,6 +153,9 @@ module Kubernetes
       @http_pool = DB::Pool(HTTP::Client).new do
         http = HTTP::Client.new(server, tls: @tls)
         http.before_request do |request|
+          request.path = server.path + "/" + request.path
+          request.path = request.path.gsub(%r{//+}, '/')
+
           token_value = token.call
 
           if token_value.presence
@@ -194,7 +197,6 @@ module Kubernetes
 
     def get(path : String, headers = HTTP::Headers.new, &)
       @http_pool.checkout do |http|
-        path = path.gsub(%r{//+}, '/')
         http.get path, headers: headers do |response|
           yield response
         ensure
@@ -205,14 +207,12 @@ module Kubernetes
 
     def put(path : String, body, headers = HTTP::Headers.new)
       @http_pool.checkout do |http|
-        path = path.gsub(%r{//+}, '/')
         http.put path, headers: headers, body: body.to_json
       end
     end
 
     def raw_patch(path : String, body, headers = HTTP::Headers.new)
       @http_pool.checkout do |http|
-        path = path.gsub(%r{//+}, '/')
         http.patch path, headers: headers, body: body
       end
     end
@@ -221,14 +221,12 @@ module Kubernetes
       headers["Content-Type"] = "application/apply-patch+yaml"
 
       @http_pool.checkout do |http|
-        path = path.gsub(%r{//+}, '/')
         http.patch path, headers: headers, body: body.to_yaml
       end
     end
 
     def delete(path : String, headers = HTTP::Headers.new)
       @http_pool.checkout do |http|
-        path = path.gsub(%r{//+}, '/')
         http.delete path, headers: headers
       end
     end
