@@ -17,15 +17,9 @@ begin
         str.puts "# #{line}"
       end
     end
+
     code = <<-CRYSTAL
-    #{description.rstrip}
-    struct #{crd.spec.names.kind}
-      include Kubernetes::Serializable
-
-      #{properties.to_crystal}
-
-      #{spec.initializer}
-    end
+    #{spec.to_crystal_struct(name: crd.spec.names.kind)}
 
     Kubernetes.define_resource(
       name: #{crd.spec.names.plural.inspect},

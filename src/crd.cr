@@ -88,8 +88,6 @@ module Kubernetes
                       str.puts ','
                     end
 
-
-
                     str.puts ')'
                     str.puts "end"
                   end
@@ -98,9 +96,7 @@ module Kubernetes
                 def to_crystal(name : String)
                   String.build do |str|
                     type_name = crystal_type(name)
-                    if nullable?
-                      type_name += "?"
-                    end
+                    type_name += "?" if nullable?
 
                     str << type_name
 
@@ -131,6 +127,24 @@ module Kubernetes
                         str << " = " << default_value
                       end
                     end
+                  end
+                end
+
+                def to_crystal_struct(*, name : String)
+                  String.build do |str|
+                    description.try &.each_line do |line|
+                      str.puts "  # #{line}"
+                    end
+                    str << <<-CRYSTAL
+                      struct #{name}
+                        include ::Kubernetes::Serializable
+
+                        #{properties.to_crystal}
+
+                        #{initializer}
+                      end
+
+                    CRYSTAL
                   end
                 end
 
@@ -204,20 +218,9 @@ module Kubernetes
                         str << "  @[YAML::Field(key: #{name.inspect})]\n"
                         str << "  @[JSON::Field(key: #{name.inspect})]\n"
                         str << "  getter #{name.underscore} : #{spec.to_crystal(name)}\n"
+
                         if spec.type == "object" && !spec.preserve_unknown_fields? && !spec.additional_properties
-                          spec.description.try &.each_line do |line|
-                            str.puts "  # #{line}"
-                          end
-                          str << <<-CRYSTAL
-                            struct #{name.camelcase}
-                              include ::Kubernetes::Serializable
-
-                              #{spec.properties.to_crystal}
-
-                              #{spec.initializer}
-                            end
-
-                          CRYSTAL
+                          str << spec.to_crystal_struct(name: name.camelcase)
                         elsif spec.type == "boolean"
                           # Alias a predicate method ending in a question mark.
                           str << <<-CRYSTAL
@@ -227,19 +230,7 @@ module Kubernetes
 
                           CRYSTAL
                         elsif spec.type == "array" && (items = spec.items) && items.type == "object"
-                          spec.description.try &.each_line do |line|
-                            str.puts "  # #{line}"
-                          end
-                          str << <<-CRYSTAL
-                            struct #{name.camelcase}
-                              include ::Kubernetes::Serializable
-
-                              #{items.properties.to_crystal}
-
-                              #{items.initializer}
-                            end
-
-                          CRYSTAL
+                          str << items.to_crystal_struct(name: name.camelcase)
                         elsif spec.type == "string" && (e = spec.enum)
                           spec.description.try &.each_line do |line|
                             str.puts "  # #{line}"
