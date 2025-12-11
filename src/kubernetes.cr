@@ -231,6 +231,12 @@ module Kubernetes
       end
     end
 
+    def create_synced_store(type : T.class, path : String) : Kubernetes::SyncedStore(T) forall T
+      Kubernetes::SyncedStore(T).new(self, path).tap do |s|
+        s.spawn_watch
+      end
+    end
+
     private def make_label_selector_string(label_selector : String | Nil)
       label_selector
     end
@@ -292,6 +298,78 @@ module Kubernetes
           raise ClientError.new("K8s API returned status code #{response.status_code}", status, response)
         end
       end
+    end
+
+    def watch_resource(resource_type : T.class, url : String, resource_version = "0", timeout : Time::Span = 10.minutes, labels label_selector : String = "") forall T
+      params = URI::Params{
+        "watch" => "1",
+        "timeoutSeconds" => timeout.total_seconds.to_i64.to_s,
+        "labelSelector" => label_selector,
+      }
+      get_response = nil
+      loop do
+        params["resourceVersion"] = resource_version
+
+        return get "#{url}?#{params}" do |response|
+          get_response = response
+          unless response.success?
+            if response.headers["Content-Type"]?.try(&.includes?("application/json"))
+              message = JSON.parse(response.body_io)
+            else
+              message = response.body_io.gets_to_end
+            end
+
+            raise ClientError.new("#{response.status}: #{message}", nil, response)
+          end
+
+          loop do
+            json_string = response.body_io.read_line
+
+            parser = JSON::PullParser.new(json_string)
+            kind = parser.on_key!("object") do
+              parser.on_key!("kind") do
+                parser.read_string
+              end
+            end
+
+            if kind == "Status"
+              watch = Watch(Status).from_json(json_string)
+              obj = watch.object
+
+              if match = obj.message.match /too old resource version: \d+ \((\d+)\)/
+                resource_version = match[1]
+              end
+              # If this is an error of some kind, we don't care we'll just run
+              # another request starting from the last resource version we've
+              # worked with.
+              next
+            end
+
+            watch = Watch(T).from_json(json_string)
+
+            # If there's a JSON parsing failure and we loop back around, we'll
+            # use this resource version to pick up where we left off.
+            if new_version = watch.object.metadata.resource_version.presence
+              resource_version = new_version
+            end
+
+            yield watch
+          end
+        end
+      rescue ex : IO::EOFError
+        # Server closed the connection after the timeout
+      rescue ex : IO::Error
+        @log.warn { ex }
+        sleep 1.second # Don't hammer the server
+      rescue ex : JSON::ParseException
+        # This happens when the watch request times out. This is expected and
+        # not an error, so we just ignore it.
+        unless ex.message.try &.includes? "Expected BeginObject but was EOF at line 1, column 1"
+          @log.warn { "Cannot parse watched object: #{ex}" }
+        end
+      end
+    ensure
+      @log.warn { "Exited watch loop for #{url}, response = #{get_response.inspect}" }
     end
   end
 
@@ -622,3 +700,5 @@ end
 
 require "./define_resource"
 require "./types/**"
+
+require "./synced_store"
