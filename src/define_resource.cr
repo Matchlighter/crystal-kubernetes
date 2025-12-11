@@ -15,6 +15,17 @@ module Kubernetes
     {% singular_method_name = singular_name.gsub(/-/, "_") %}
 
     class ::Kubernetes::Client
+      def {{plural_method_name.id}}_api_path(namespace : String? = nil, name : String? = nil, *, subresource : String? = nil, params : URI::Params? = nil)
+        String.build do |s|
+          s << "/{{prefix.id}}/{{group.id}}/{{version.id}}"
+          s << "/namespaces/#{namespace}" if !{{ cluster_wide }} && namespace
+          s << "/{{name.id}}"
+          s << name if name
+          s << "/#{subresource}" if subresource
+          s << "?#{params}" if params
+        end
+      end
+
       def {{plural_method_name.id}}(
         {% if cluster_wide == false %}
           namespace : String? = "default",
@@ -31,7 +42,7 @@ module Kubernetes
         {% end %}
         params = URI::Params.new
         params["labelSelector"] = label_selector if label_selector
-        path = "/{{prefix.id}}/{{group.id}}/{{version.id}}#{namespace}/{{name.id}}?#{params}"
+        path = {{plural_method_name.id}}_api_path(namespace, params: params)
         get path do |response|
           {% if list_type %}
             parse_response!(response, {{list_type}}).not_nil!
@@ -60,12 +71,13 @@ module Kubernetes
           namespace = nil
         {% end %}
 
-        path = "/{{prefix.id}}/{{group.id}}/{{version.id}}#{namespace}/{{name.id}}/#{name}"
         params = URI::Params{
           "resourceVersion" => resource_version,
         }
 
-        get "#{path}?#{params}" do |response|
+        path = {{plural_method_name.id}}_api_path(namespace, name, params: params)
+
+        get path do |response|
           parse_response(response)
         end
       end
@@ -80,7 +92,6 @@ module Kubernetes
         force : Bool = false,
         field_manager : String? = nil,
       )
-        path = "/{{prefix.id}}/{{group.id}}/{{version.id}}{{cluster_wide ? "".id : "/namespaces/\#{namespace}".id}}/{{name.id}}/#{name}"
         params = URI::Params{
           "force" => force.to_s,
           "fieldManager" => field_manager || "k8s-cr",
@@ -92,6 +103,8 @@ module Kubernetes
         if resource_version = resource.metadata.resource_version.presence
           metadata = metadata.merge(resourceVersion: resource_version)
         end
+
+        path = {{plural_method_name.id}}_api_path(namespace, name, params: params)
 
         response = patch "#{path}?#{params}", {
           apiVersion: resource.api_version,
@@ -128,12 +141,12 @@ module Kubernetes
           {% end %}
         end
 
-        path = "/{{prefix.id}}/{{group.id}}/{{version.id}}{% if cluster_wide == false %}/namespaces/#{namespace}{% end %}/{{name.id}}/#{name}"
         params = URI::Params{
           "force" => force.to_s,
           "fieldManager" => field_manager || "k8s-cr",
         }
-        response = patch "#{path}?#{params}", {
+        path = {{plural_method_name.id}}_api_path(namespace, name, params: params)
+        response = patch path, {
           apiVersion: api_version,
           kind: kind,
           metadata: metadata,
@@ -143,7 +156,7 @@ module Kubernetes
       end
 
       def patch_{{singular_method_name.id}}(name : String, {% if cluster_wide == false %}namespace, {% end %}**kwargs)
-        path = "/{{prefix.id}}/{{group.id}}/{{version.id}}{% if cluster_wide == false %}/namespaces/#{namespace}{% end %}/{{name.id}}/#{name}"
+        path = {{plural_method_name.id}}_api_path(namespace, name)
         headers = HTTP::Headers{
           "Content-Type" =>  "application/merge-patch+json",
         }
@@ -153,7 +166,7 @@ module Kubernetes
       end
 
       def patch_{{singular_method_name.id}}_subresource(name : String, subresource : String{% if cluster_wide == false %}, namespace : String = "default"{% end %}, **args)
-        path = "/{{prefix.id}}/{{group.id}}/{{version.id}}{% if cluster_wide == false %}/namespaces/#{namespace}{% end %}/{{name.id}}/#{name}/#{subresource}"
+        path = {{plural_method_name.id}}_api_path(namespace, name, subresource: subresource)
         headers = HTTP::Headers{
           "Content-Type" =>  "application/merge-patch+json",
         }
@@ -168,15 +181,13 @@ module Kubernetes
 
       def delete_{{singular_method_name.id}}(name : String{% if cluster_wide == false %}, namespace : String = "default"{% end %}, *, propagation_policy : PropagationPolicy = :background)
         params = URI::Params{"propagationPolicy" => propagation_policy.to_s}
-        path = "/{{prefix.id}}/{{group.id}}/{{version.id}}{% if cluster_wide == false %}/namespaces/#{namespace}{% end %}/{{name.id}}/#{name}?#{params}"
+        path = {{plural_method_name.id}}_api_path(namespace, name, params: params)
         response = delete path
         JSON.parse response.body
       end
 
       def watch_{{plural_method_name.id}}(resource_version = "0", timeout : Time::Span = 10.minutes, namespace : String? = nil, labels label_selector : String = "")
-        path = "/{{prefix.id}}/{{group.id}}/{{version.id}}"
-        path += "/namespaces/#{namespace}" if !{{ cluster_wide }} && namespace
-        path += "/{{name.id}}"
+        path = {{plural_method_name.id}}_api_path(namespace)
         watch_resource({{type}}, path, resource_version, timeout, label_selector) do |watch|
           yield watch
         end
