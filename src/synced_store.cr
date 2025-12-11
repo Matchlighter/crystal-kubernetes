@@ -1,8 +1,12 @@
 module Kubernetes
   class SyncedStore(T)
-    def initialize(@k8s_client : Client, @api_path : String)
+    def initialize(@resource_watcher : ResourceWatcher(T))
       @mutex = Mutex.new
       @cache = Hash(String, T).new
+    end
+
+    def self.new(k8s_client : Client, api_path : String)
+      new(ResourceWatcher(T).new(k8s_client, api_path))
     end
 
     def get(namespace : String, name : String) : T?
@@ -35,9 +39,13 @@ module Kubernetes
       get(name)
     end
 
+    def disconnect
+      @resource_watcher.abort!
+    end
+
     def spawn_watch
       spawn do
-        @k8s_client.watch_resource(T, @api_path) do |watch|
+        @resource_watcher.start_watch! do |watch|
           obj = watch.object
           key = obj.metadata.namespace.presence ? "#{obj.metadata.namespace}/#{obj.metadata.name}" : obj.metadata.name
 
@@ -45,10 +53,10 @@ module Kubernetes
             case watch
             when .added?, .modified?
               @cache[key] = obj
-              Log.debug { "Updated #{@api_path} cache for #{key}" }
+              Log.debug { "Updated #{@resource_watcher.api_path} cache for #{key}" }
             when .deleted?
               @cache.delete(key)
-              Log.debug { "Removed #{@api_path} from cache: #{key}" }
+              Log.debug { "Removed #{@resource_watcher.api_path} from cache: #{key}" }
             end
           end
         end
