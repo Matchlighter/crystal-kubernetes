@@ -45,7 +45,7 @@ module Kubernetes
 
     def spawn_watch
       spawn do
-        @resource_watcher.start_watch! do |watch|
+        @resource_watcher.start_watching! do |watch|
           obj = watch.object
           key = obj.metadata.namespace.presence ? "#{obj.metadata.namespace}/#{obj.metadata.name}" : obj.metadata.name
 
