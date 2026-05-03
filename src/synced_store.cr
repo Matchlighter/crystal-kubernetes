@@ -15,7 +15,7 @@ module Kubernetes
 
     def get(name : String) : T?
       @mutex.synchronize do
-        @cache[name]
+        @cache[name]?
       end
     end
 
