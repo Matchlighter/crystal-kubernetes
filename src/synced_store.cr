@@ -3,6 +3,22 @@ module Kubernetes
     def initialize(@resource_watcher : ResourceWatcher(T))
       @mutex = Mutex.new
       @cache = Hash(String, T).new
+
+      @resource_watcher.on_change do |watch|
+        obj = watch.object
+        key = obj.metadata.namespace.presence ? "#{obj.metadata.namespace}/#{obj.metadata.name}" : obj.metadata.name
+
+        @mutex.synchronize do
+          case watch
+          when .added?, .modified?
+            @cache[key] = obj
+            Log.debug { "Updated #{@resource_watcher.api_path} cache for #{key}" }
+          when .deleted?
+            @cache.delete(key)
+            Log.debug { "Removed #{@resource_watcher.api_path} from cache: #{key}" }
+          end
+        end
+      end
     end
 
     def self.new(k8s_client : Client, api_path : String)
@@ -39,27 +55,18 @@ module Kubernetes
       get(name)
     end
 
+    # Register a callback that fires on each watch event after the cache is updated
+    def on_change(&block : Kubernetes::Watch(T) -> Nil)
+      @resource_watcher.on_change(&block)
+    end
+
     def disconnect
       @resource_watcher.abort!
     end
 
     def spawn_watch
       spawn do
-        @resource_watcher.start_watching! do |watch|
-          obj = watch.object
-          key = obj.metadata.namespace.presence ? "#{obj.metadata.namespace}/#{obj.metadata.name}" : obj.metadata.name
-
-          @mutex.synchronize do
-            case watch
-            when .added?, .modified?
-              @cache[key] = obj
-              Log.debug { "Updated #{@resource_watcher.api_path} cache for #{key}" }
-            when .deleted?
-              @cache.delete(key)
-              Log.debug { "Removed #{@resource_watcher.api_path} from cache: #{key}" }
-            end
-          end
-        end
+        @resource_watcher.start_watching!
       end
     end
   end

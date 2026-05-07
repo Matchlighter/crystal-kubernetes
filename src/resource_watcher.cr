@@ -2,6 +2,7 @@ module Kubernetes
   class ResourceWatcher(T)
     @dedicated_client : HTTP::Client?
     @state : State
+    @on_change_handlers : Array(Watch(T) -> Nil)
 
     getter :api_path, :params
 
@@ -16,6 +17,13 @@ module Kubernetes
       @mutex = Mutex.new
       @state = State::Ready
       @log = @k8s_client.logger
+      @on_change_handlers = [] of Watch(T) -> Nil
+    end
+
+    # Register a callback that fires on each watch event (ADDED, MODIFIED, DELETED).
+    # Multiple handlers can be registered; all are called in registration order.
+    def on_change(&block : Watch(T) -> Nil)
+      @on_change_handlers << block
     end
 
     def close
@@ -89,7 +97,7 @@ module Kubernetes
               params["resourceVersion"] = new_version
             end
 
-            yield watch
+            @on_change_handlers.each &.call(watch)
           end
         end
       rescue ex : IO::EOFError
