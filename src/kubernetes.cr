@@ -309,15 +309,15 @@ module Kubernetes
       end
     end
 
-    def watch_resource(resource_type : T.class, url : String, resource_version = "0", timeout : Time::Span = 10.minutes, labels label_selector : String = "") forall T
+    def watch_resource(resource_type : T.class, url : String, resource_version = "0", timeout : Time::Span = 10.minutes, labels label_selector : String = "", &) forall T
       params = URI::Params{
-        "timeoutSeconds" => timeout.total_seconds.to_i64.to_s,
+        "timeoutSeconds"  => timeout.total_seconds.to_i64.to_s,
         "resourceVersion" => resource_version,
-        "labelSelector" => label_selector,
+        "labelSelector"   => label_selector,
       }
 
       rw = ResourceWatcher(T).new(self, url, params)
-      rw.start_watch! do |watch|
+      rw.start_watching! do |watch|
         yield watch
       end
     end

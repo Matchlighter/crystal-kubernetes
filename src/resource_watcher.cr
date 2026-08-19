@@ -1,8 +1,14 @@
 module Kubernetes
+  # Internal signal used to restart a watch from a fresh snapshot when the API
+  # server no longer has the requested resource version.
+  class ResourceVersionExpired < Exception
+  end
+
   class ResourceWatcher(T)
     @dedicated_client : HTTP::Client?
     @state : State
     @on_change_handlers : Array(Watch(T) -> Nil)
+    @on_reset_handlers : Array(-> Nil)
 
     getter :api_path, :params
 
@@ -18,12 +24,20 @@ module Kubernetes
       @state = State::Ready
       @log = @k8s_client.logger
       @on_change_handlers = [] of Watch(T) -> Nil
+      @on_reset_handlers = [] of -> Nil
     end
 
     # Register a callback that fires on each watch event (ADDED, MODIFIED, DELETED).
     # Multiple handlers can be registered; all are called in registration order.
     def on_change(&block : Watch(T) -> Nil)
       @on_change_handlers << block
+    end
+
+    # Register a callback that fires before a watch is restarted without a
+    # resource version. Consumers maintaining a cache must discard their old
+    # snapshot because events may have been compacted by the API server.
+    def on_reset(&block : -> Nil)
+      @on_reset_handlers << block
     end
 
     def close
@@ -35,14 +49,14 @@ module Kubernetes
     end
 
     def start_watching!
+      start_watching! { |_watch| }
+    end
+
+    def start_watching!(&)
       @mutex.synchronize do
-        raise "Watch already active" unless @state = State::Ready
+        raise "Watch already active" unless @state == State::Ready
         @state = State::Watching
       end
-
-      # This needs a dedicated HTTP connection so that we can call close() on it
-      #   Calling response.body_io.close() does not work
-      client = @dedicated_client ||= @k8s_client.create_http_client
 
       params = @params.dup
       params["watch"] = "1"
@@ -52,11 +66,15 @@ module Kubernetes
       latest_response = nil
 
       loop do
-        return nil unless @state == State::Watching
+        break unless client = active_client
 
-        return client.get "#{@api_path}?#{params}" do |response|
+        client.get "#{@api_path}?#{params}" do |response|
           latest_response = response
           unless response.success?
+            if response.status_code == 410
+              raise ResourceVersionExpired.new
+            end
+
             if response.headers["Content-Type"]?.try(&.includes?("application/json"))
               message = JSON.parse(response.body_io)
             else
@@ -80,12 +98,11 @@ module Kubernetes
               watch = Watch(Status).from_json(json_string)
               obj = watch.object
 
-              if match = obj.message.match /too old resource version: \d+ \((\d+)\)/
-                params["resourceVersion"] = match[1]
+              if obj.code == 410 || obj.reason == "Expired" || obj.message.includes?("too old resource version")
+                raise ResourceVersionExpired.new
               end
-              # If this is an error of some kind, we don't care we'll just run
-              # another request starting from the last resource version we've
-              # worked with.
+
+              @log.warn { "Watch error for #{@api_path}: #{obj.message}" }
               next
             end
 
@@ -98,14 +115,26 @@ module Kubernetes
             end
 
             @on_change_handlers.each &.call(watch)
+            yield watch
           end
         end
+      rescue ex : ResourceVersionExpired
+        return nil unless watching?
+
+        # A non-zero resource version does not send the current state. Omit it
+        # so the next request starts from a current snapshot with synthetic
+        # ADDED events, and let cache consumers discard state that can no
+        # longer be reconciled.
+        params.delete("resourceVersion")
+        @on_reset_handlers.each &.call
+        reset_client
       rescue ex : IO::EOFError
         # Server closed the connection after the timeout
       rescue ex : IO::Error
-        return nil unless @state == State::Watching
+        return nil unless watching?
 
         @log.warn { ex }
+        reset_client
         sleep 1.second # Don't hammer the server
       rescue ex : JSON::ParseException
         # This happens when the watch request times out. This is expected and
@@ -113,6 +142,11 @@ module Kubernetes
         unless ex.message.try &.includes? "Expected BeginObject but was EOF at line 1, column 1"
           @log.warn { "Cannot parse watched object: #{ex}" }
         end
+      rescue ex : ClientError
+        return nil unless watching?
+
+        @log.warn { ex }
+        sleep 1.second # Don't hammer the server
       end
     ensure
       @mutex.synchronize do
@@ -121,7 +155,28 @@ module Kubernetes
         else
           @log.debug { "Gracefully exited watch loop for #{@api_path}" }
         end
+        @dedicated_client.try(&.close)
+        @dedicated_client = nil
         @state = State::Closed
+      end
+    end
+
+    private def watching?
+      @mutex.synchronize { @state == State::Watching }
+    end
+
+    # Watches need a dedicated connection so close can interrupt a blocked read.
+    private def active_client : HTTP::Client?
+      @mutex.synchronize do
+        return nil unless @state == State::Watching
+        @dedicated_client ||= @k8s_client.create_http_client
+      end
+    end
+
+    private def reset_client
+      @mutex.synchronize do
+        @dedicated_client.try(&.close)
+        @dedicated_client = nil
       end
     end
   end

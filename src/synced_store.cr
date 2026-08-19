@@ -19,6 +19,13 @@ module Kubernetes
           end
         end
       end
+
+      @resource_watcher.on_reset do
+        @mutex.synchronize do
+          @cache.clear
+          Log.debug { "Cleared #{@resource_watcher.api_path} cache before rebuilding it" }
+        end
+      end
     end
 
     def self.new(k8s_client : Client, api_path : String)
@@ -61,7 +68,7 @@ module Kubernetes
     end
 
     def disconnect
-      @resource_watcher.abort!
+      @resource_watcher.close
     end
 
     def spawn_watch
