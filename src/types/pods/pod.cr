@@ -66,7 +66,7 @@ module Kubernetes
         field name : String
         field kind : String
         field uid : UUID
-        field controller : Bool
+        field controller : Bool?
         field block_owner_deletion : Bool?
       end
     end
